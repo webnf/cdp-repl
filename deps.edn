@@ -1,0 +1,16 @@
+{:deps {clj-chrome-devtools {:mvn/version "20200423"}
+        org.clojure/clojure {:mvn/version "1.10.1"}
+        org.clojure/clojurescript {:mvn/version "1.10.773"}
+        org.clojure/core.match {:mvn/version "1.0.0"}
+        clj-http {:mvn/version "3.10.1"}}
+ 
+ :paths ["src" "resources" "dev-resources" "target/resources"]
+ ;; setup a helpful alias to start the build
+ :aliases {:nrepl {:extra-deps {nrepl {:mvn/version "0.7.0"}
+                                cider/piggieback {:mvn/version "0.5.0"}
+                                refactor-nrepl {:mvn/version "2.5.0"}
+                                cider/cider-nrepl {:mvn/version "0.25.1"}}
+                   :main-opts ["-m" "nrepl.cmdline" "--middleware" "[refactor-nrepl.middleware/wrap-refactor,cider.nrepl/cider-middleware,cider.piggieback/wrap-cljs-repl]"]}
+           :ancient   {:main-opts  ["-m" "deps-ancient.deps-ancient"]
+                       :extra-deps {deps-ancient {:mvn/version "0.0.4"}
+                                    org.clojure/tools.deps.alpha {:mvn/version "0.8.709"}}}}}
