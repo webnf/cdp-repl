@@ -12,6 +12,7 @@
             [clojure.core.match :as m :refer [match]]
             [clojure.java.io :as io]
             [clojure.data.json :as json]
+            [clojure.tools.logging :as log]
             [cljs.closure]
             [cljs.compiler]
             [cljs.build.api :as bapi]
@@ -52,7 +53,7 @@
                                                                                          path (if (str/blank? ap)
                                                                                                 script
                                                                                                 (str ap "/" script))]
-                                                                                     (prn ::path path)
+                                                                                     (log/debug "SCRIPT #io/resource" (pr-str path))
                                                                                      path)))}})))
       [{:result {:type "string" :value "console"}}]
       (println (str (->
@@ -242,6 +243,13 @@ CLOSURE_IMPORT_SCRIPT(\"cljs_deps.js\");
            :target-fn target-fn}
           opts)))
 
+(defn repl-env
+  [host port {:as opts :keys [::page]
+              :or {page 0}}]
+  (-> (dtc/inspectable-pages host port)
+      (nth page) :web-socket-debugger-url
+      (repl-env* (assoc opts ::host host ::port port ::page page))))
+
 (comment
   (do
     (defonce OPTS
@@ -256,14 +264,10 @@ CLOSURE_IMPORT_SCRIPT(\"cljs_deps.js\");
        :parallel-build true
        :aot-cache true
        :infer-externs true})
-    (-> (dtc/inspectable-pages "localhost" 9223)
-        first :web-socket-debugger-url
-        (->> (def URL)))
     (bapi/build "dev-resources" OPTS)
     (defonce WATCH
       (future (bapi/watch "dev-resources" OPTS)))
-    (cljs.repl/repl (repl-env* URL OPTS)))
-
-
+    (def ENV (repl-env "localhost" 9223 OPTS))
+    (cljs.repl/repl ENV))
 
   )
