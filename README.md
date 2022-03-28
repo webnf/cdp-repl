@@ -4,6 +4,17 @@ devtools/debugger port.
 
 ### Example
 
+#### Add cdp-repl to your `deps.edn`
+
+```edn
+webnf/cdp-repl
+{:git/url "https://github.com/webnf/cdp-repl.git"
+ ;; replace with latest master
+ :sha "72af8c0bc72c7129e60b918426ef981db220232f"}
+```
+
+**TODO**: packaging and deployment to clojars
+
 #### Start a JS runtime with an inspector port
 
 ```sh
