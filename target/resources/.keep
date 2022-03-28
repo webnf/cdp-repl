@@ -1,0 +1,1 @@
+this folder needs to exist at jdk startup, for classloader to pick it up as a resource folder
