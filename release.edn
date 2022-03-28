@@ -1,0 +1,3 @@
+{:group-id "webnf"
+ :artifact-id "cdp-repl"
+ :scm-url "https://github.com/webnf/cdp-repl"}

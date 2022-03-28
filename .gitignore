@@ -4,3 +4,4 @@
 /.lsp/
 /.clj-kondo/
 /target
+/pom.xml
