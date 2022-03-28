@@ -18,7 +18,8 @@
 
             [cljs.repl :as repl]
             [cljs.util]
-            [cljs.stacktrace :as st]))
+            [cljs.stacktrace :as st]
+            [clojure.string :as str]))
 
 (defmacro dochan [[binding chan] & body]
   `(let [chan# ~chan]
@@ -32,33 +33,37 @@
   {:pre [(not (contains? m k))]}
   (assoc m k v))
 
-(defn handle-break! [connection {:as break
-                                 {[{:keys [call-frame-id]}] :call-frames} :params}]
+(defn handle-break! [ctx connection {:as break
+                                     {[{:keys [call-frame-id]}] :call-frames} :params}]
   #_(def BREAK break)
   (try
     (match [(dd/evaluate-on-call-frame connection {:call-frame-id call-frame-id
                                                    :expression "WEBNF_CDP_REPL_REQUEST.method"})]
-           [{:result {:type "string" :value "read-script"}}]
-           (match [(dd/evaluate-on-call-frame connection {:call-frame-id call-frame-id
-                                                          :expression "WEBNF_CDP_REPL_REQUEST.script"})]
-                  [{:result {:type "string" :value script}}]
-                  (do (prn :read-script script)
-                      (dd/set-variable-value connection {:call-frame-id call-frame-id
-                                                         :scope-number 0
-                                                         :variable-name "WEBNF_CDP_REPL_RESULT"
-                                                         :new-value {:type "string"
-                                                                     :value (slurp (or (io/resource (str "bot/" script))
-                                                                                       (io/resource script)))}})))
-           [{:result {:type "string" :value "console"}}]
-           (println (str (->
-                          (dd/evaluate-on-call-frame connection {:call-frame-id call-frame-id
-                                                                 :expression "WEBNF_CDP_REPL_REQUEST.level"})
-                          :result :value)
-                         ":")
-                    (->
+      [{:result {:type "string" :value "read-script"}}]
+      (match [(dd/evaluate-on-call-frame connection {:call-frame-id call-frame-id
+                                                     :expression "WEBNF_CDP_REPL_REQUEST.script"})]
+        [{:result {:type "string" :value script}}]
+        (do #_(prn ::read-script script)
+         (dd/set-variable-value connection {:call-frame-id call-frame-id
+                                            :scope-number 0
+                                            :variable-name "WEBNF_CDP_REPL_RESULT"
+                                            :new-value {:type "string"
+                                                        :value (slurp (io/resource (let [ap (:asset-path ctx)
+                                                                                         path (if (str/blank? ap)
+                                                                                                script
+                                                                                                (str ap "/" script))]
+                                                                                     (prn ::path path)
+                                                                                     path)))}})))
+      [{:result {:type "string" :value "console"}}]
+      (println (str (->
                      (dd/evaluate-on-call-frame connection {:call-frame-id call-frame-id
-                                                            :expression "WEBNF_CDP_REPL_REQUEST.values.join(\", \")"})
-                     :result :value)))
+                                                            :expression "WEBNF_CDP_REPL_REQUEST.level"})
+                     :result :value)
+                    ":")
+               (->
+                (dd/evaluate-on-call-frame connection {:call-frame-id call-frame-id
+                                                       :expression "WEBNF_CDP_REPL_REQUEST.values.join(\", \")"})
+                :result :value)))
     (dd/resume connection {})
     (catch Exception e
       #_(def ERROR-BREAK break)
@@ -66,28 +71,18 @@
     #_(finally
         (dd/resume connection {}))))
 
-#_(dochan [break (de/listen :debugger :paused)]
-        (handle-break! c break))
-#_(dd/enable)
-
-#_(dochan [msg
-         (de/listen c :console :message-added)]
-        (println "Console Message")
-        (prn :msg msg))
-#_(dc/enable c {})
-
 (defn to-result [ret]
   (match [ret]
-         [{:result res
-           :exception-details details}]
-         {:status :exception
-          :value (pr-str res)
-          :details details}
-         [{:result res}]
-         {:status :success
-          :value (:value res)}))
+    [{:result res
+      :exception-details details}]
+    {:status :exception
+     :value (pr-str res)
+     :details details}
+    [{:result res}]
+    {:status :success
+     :value (:value res)}))
 
-(defn bootstrap [opts]
+(defn target [opts]
   (let [module (get (:modules opts) (:module-name opts))
         asset-path (or (:asset-path opts)
                        (cljs.util/output-directory opts))
@@ -123,6 +118,9 @@ var CLOSURE_IMPORT_SCRIPT = (function(global) {
       method: \"read-script\",
       script: src
     };
+    // this breakpoint triggers the CDP-REPL runtime
+    // if you're staring at this in devtools, it means
+    // that CDP-REPL is not handling requests
     debugger;
     if(sentinel === WEBNF_CDP_REPL_RESULT) { throw new Error(\"No loader attached\"); }
     global.console = global.webnfCdpReplConsole; // will be overwritten in tick
@@ -146,9 +144,12 @@ CLOSURE_IMPORT_SCRIPT(\"cljs_deps.js\");
                          [main])))))))
 
 (defrecord DevtoolsEnv [url context handle-break! state]
+  clojure.lang.IFn
+  (invoke [this k] (get this k))
+  (invoke [this k d] (get this k d))
   repl/IJavaScriptEnv
   (-setup [this opts]
-    #_(prn :setup)
+    #_(prn ::-setup)
     (let [connection (dtc/connect-url url)
           pl (de/listen connection :debugger :paused)
           cl (de/listen connection :console :message-added)
@@ -165,23 +166,25 @@ CLOSURE_IMPORT_SCRIPT(\"cljs_deps.js\");
       (dc/enable connection {})
       (dd/enable connection {})
       (dr/enable connection {})
-      (dochan [break pl] (handle-break! connection break))
-      (dochan [msg cl] (prn :console msg))
+      (dochan [break pl] (handle-break! this connection break))
+      (dochan [msg cl] (prn ::console msg))
       (dochan [{{{:as context :keys [name]} :context} :params} rcl]
               (swap! ctxs assoc-once name context))
       (dochan [{{{:as context :keys [name]} :context} :params} rdl]
               (swap! ctxs dissoc name))
       (dr/evaluate connection
-                   {:expression (bootstrap this)
+                   {:expression (target this)
                     :context-id context})
       this))
   (-evaluate [_ _ _ js]
+    #_(prn ::-evaluate)
     (to-result
      (dr/evaluate (:connection @state)
                   {:expression (str "global.console = global.webnfCdpReplConsole; " js)
                    :context-id context
                    :generate-preview true})))
   (-load [_ provides url]
+    #_(prn ::-load)
     (let [{:keys [connection]} @state
           {:keys [script-id]} (dr/compile-script
                                connection
@@ -195,16 +198,19 @@ CLOSURE_IMPORT_SCRIPT(\"cljs_deps.js\");
                        :execution-context-id context
                        :generate-preview true}))))
   (-tear-down [this]
-    #_(prn :tear-down)
+    #_(prn ::-tear-down)
     (let [{:keys [connection debug-pauses console-messages context-created context-destroyed]} @state]
-      (dd/disable connection {})
-      (dc/disable connection {})
-      (dr/disable connection {})
-      (de/unlisten connection :debugger :paused debug-pauses)
-      (de/unlisten connection :console :message-added console-messages)
-      (de/unlisten connection :runtime :execution-context-created context-created)
-      (de/unlisten connection :runtime :execution-context-destroyed context-destroyed)
-      (.close connection)
+      (if connection
+        (do
+          (dd/disable connection {})
+          (dc/disable connection {})
+          (dr/disable connection {})
+          (de/unlisten connection :debugger :paused debug-pauses)
+          (de/unlisten connection :console :message-added console-messages)
+          (de/unlisten connection :runtime :execution-context-created context-created)
+          (de/unlisten connection :runtime :execution-context-destroyed context-destroyed)
+          (.close connection))
+        (println "No connection, proceeding with shutdown"))
       (swap! state dissoc :debug-pauses :console-messages :context-created :context-destroyed :connection)
       this))
   repl/IReplEnvOptions
@@ -224,49 +230,40 @@ CLOSURE_IMPORT_SCRIPT(\"cljs_deps.js\");
                               :stacktrace (.-stack ~e)}))))))
 
 (defn repl-env*
-  [{:as opts :keys [url context handle-break!]
-    :or {handle-break! #'handle-break!
-         context 0}}]
-  (merge (->DevtoolsEnv url context handle-break! (atom {}))
-         opts))
+  [url {:as opts :keys [context handle-break! target-fn]
+        :or {handle-break! #'handle-break!
+             context 1
+             target-fn `target}}]
+  (map->DevtoolsEnv
+   (merge {:url url
+           :context context
+           :handle-break! handle-break!
+           :state (atom {})
+           :target-fn target-fn}
+          opts)))
 
 (comment
-  (future
-    (bapi/build
-     "src"
-     {:main "screeps.bot"
-      :asset-path "bot"
-      :output-to "target/resources/bot.js"
-      :output-dir "target/resources/bot/"
-      :target :bundle
-      :target-fn `bootstrap
-      :optimizations :none
-      :pretty-print true
-      :source-map true
-      :parallel-build true
-      :aot-cache true
-      :infer-externs true
-      :verbose false}))
-  )
+  (do
+    (defonce OPTS
+      {:main 'user
+       :asset-path "cdp-repl"
+       :output-to "target/resources/cdp-repl.js"
+       :output-dir "target/resources/cdp-repl/"
+       :target :bundle
+       :optimizations :none
+       :pretty-print true
+       :source-map true
+       :parallel-build true
+       :aot-cache true
+       :infer-externs true})
+    (-> (dtc/inspectable-pages "localhost" 9223)
+        first :web-socket-debugger-url
+        (->> (def URL)))
+    (bapi/build "dev-resources" OPTS)
+    (defonce WATCH
+      (future (bapi/watch "dev-resources" OPTS)))
+    (cljs.repl/repl (repl-env* URL OPTS)))
 
-(comment
-  (cider.piggieback/cljs-repl
-   (repl-env* {:url "ws://127.0.0.1:7777/inspect/e53a2171f13dfbe"
-               :context 2
-               ;; :entry-point "bot.js"
-               ;; :working-dir "target/resources/bot/"
-              
-               :main "screeps.bot"
-               :asset-path "bot"
-               :output-to "target/resources/bot.js"
-               :output-dir "target/resources/bot/"
-               :target :bundle
-               :target-fn `bootstrap
-               :optimizations :none
-               :pretty-print true
-               :source-map true
-               :parallel-build true
-               :aot-cache true
-               :infer-externs true}))
-  )
 
+
+  )
