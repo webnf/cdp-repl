@@ -4,7 +4,8 @@
             (clj-chrome-devtools.commands
              [runtime :as dr]
              [debugger :as dd]
-             [console :as dc])
+             [console :as dc]
+             [target :as dct])
 
             [clojure.edn :as edn]
             [clojure.repl :as crepl]
@@ -123,6 +124,9 @@ CLOSURE_IMPORT_SCRIPT(\"cljs_deps.js\");
                        (when-let [main (:main opts)]
                          [main])))))))
 
+(defn assoc-if [m k v]
+  (if v (assoc m k v) m))
+
 (defrecord DevtoolsEnv [url context handle-break! state]
   clojure.lang.IFn
   (invoke [this k] (get this k))
@@ -131,11 +135,22 @@ CLOSURE_IMPORT_SCRIPT(\"cljs_deps.js\");
   (-setup [this opts]
     #_(prn ::-setup)
     (let [connection (dtc/connect-url url)
-          pl (de/listen connection :debugger :paused)
-          cl (de/listen connection :console :message-added)
-          rcl (de/listen connection :runtime :execution-context-created)
-          rdl (de/listen connection :runtime :execution-context-destroyed)
-          ctxs (atom {})]
+          pl #(handle-break! this connection %)
+          cl (fn [{:as evt {{:keys [level text] :as msg} :message} :params}]
+               #_(prn ::console evt)
+               (try
+                 (log/log (case level
+                            "log" :info
+                            "warning" :warn
+                            (keyword level))
+                          text)
+                 (catch Exception e
+                   (log/fatal e "While logging" msg))))
+          ctxs (atom {})
+          rcl (fn [{{{:as context :keys [name]} :context} :params}]
+                (swap! ctxs assoc-once name context))
+          rdl (fn [{{{:as context :keys [name]} :context} :params}]
+                (swap! ctxs dissoc name))]
       (swap! state assoc
              :connection connection
              :debug-pauses pl
@@ -143,35 +158,25 @@ CLOSURE_IMPORT_SCRIPT(\"cljs_deps.js\");
              :context-created rcl
              :context-destroyed rdl
              :contexts ctxs)
+      (de/listen connection :debugger :paused pl)
+      (de/listen connection :console :message-added cl)
+      (de/listen connection :runtime :execution-context-created rcl)
+      (de/listen connection :runtime :execution-context-destroyed rdl)
+
       (dc/enable connection {})
       (dd/enable connection {})
       (dr/enable connection {})
-      (dochan [break pl] (handle-break! this connection break))
-      (dochan [{:as evt {{:keys [level text] :as msg} :message} :params} cl]
-              #_(prn ::console evt)
-              (try
-                (log/log (case level
-                           "log" :info
-                           "warning" :warn
-                           (keyword level))
-                         text)
-                (catch Exception e
-                  (log/fatal e "While logging" msg))))
-      (dochan [{{{:as context :keys [name]} :context} :params} rcl]
-              (swap! ctxs assoc-once name context))
-      (dochan [{{{:as context :keys [name]} :context} :params} rdl]
-              (swap! ctxs dissoc name))
       (dr/evaluate connection
-                   {:expression (target this)
-                    :context-id context})
+                   (assoc-if {:expression (target this)}
+                             :context-id context))
       this))
   (-evaluate [_ _ _ js]
     #_(prn ::-evaluate)
     (to-result
      (dr/evaluate (:connection @state)
-                  {:expression js
-                   :context-id context
-                   :generate-preview true})))
+                  (assoc-if {:expression js
+                             :generate-preview true}
+                            :context-id context))))
   (-load [_ provides url]
     #_(prn ::-load)
     (let [{:keys [connection]} @state
@@ -221,7 +226,6 @@ CLOSURE_IMPORT_SCRIPT(\"cljs_deps.js\");
 (defn repl-env*
   [url {:as opts :keys [context handle-break! target-fn]
         :or {handle-break! #'handle-break!
-             context 1
              target-fn `target}}]
   (map->DevtoolsEnv
    (merge {:url url
@@ -238,26 +242,39 @@ CLOSURE_IMPORT_SCRIPT(\"cljs_deps.js\");
       (nth page) :web-socket-debugger-url
       (repl-env* (assoc opts ::host host ::port port ::page page))))
 
+(defn test-env-repl []
+  ;; chromium --remote-debugging-port=9222
+  (def OPTS
+    {:main 'user
+     ;; :context 57
+     ;; :preloads '[webnf.cdp-repl.log]
+     :asset-path "cdp-repl"
+     :output-to "target/resources/cdp-repl.js"
+     :output-dir "target/resources/cdp-repl/"
+     :target :bundle
+     :optimizations :none
+     :pretty-print true
+     :source-map true
+     :parallel-build true
+     :aot-cache true
+     :infer-externs true})
+  (bapi/build (bapi/inputs "src" "dev-resources") OPTS)
+  (defonce WATCH
+    (future (bapi/watch (bapi/inputs "src" "dev-resources") OPTS)))
+  (def ENV (repl-env "127.0.0.1" 9222 OPTS))
+  (binding [cljs.repl/*cljs-verbose* true]
+    #_(cljs.repl/repl ENV)
+    (cider.piggieback/cljs-repl ENV)))
+
 (comment
-  (do
-    (defonce OPTS
-      {:main 'user
-       ;; :preloads '[webnf.cdp-repl.log]
-       :asset-path "cdp-repl"
-       :output-to "target/resources/cdp-repl.js"
-       :output-dir "target/resources/cdp-repl/"
-       :target :bundle
-       :optimizations :none
-       :pretty-print true
-       :source-map true
-       :parallel-build true
-       :aot-cache true
-       :infer-externs true})
-    (bapi/build (bapi/inputs "src" "dev-resources") OPTS)
-    (defonce WATCH
-      (future (bapi/watch (bapi/inputs "src" "dev-resources") OPTS)))
-    (def ENV (repl-env "localhost" 9223 OPTS))
-    (binding [cljs.repl/*cljs-verbose* true]
-      (cljs.repl/repl ENV)))
+
+  (dtc/inspectable-pages "localhost" 9222)
+  (def conn (dtc/connect "127.0.0.1" 9222))
+  (dr/evaluate conn {:expression "alert('hi')"})
+  (dct/get-targets conn {})
+  (de/listen conn :runtime :execution-context-created (comp prn (juxt :event :params)))
+  (de/listen conn :runtime :execution-context-destroyed (comp prn (juxt :event :params)))
+  (dr/enable conn {})
+  (.close conn)
 
   )
