@@ -23,14 +23,6 @@
             [cljs.stacktrace :as st]
             [clojure.string :as str]))
 
-(defmacro dochan [[binding chan] & body]
-  `(let [chan# ~chan]
-     (async/go-loop [val# (async/<! chan#)]
-       (when val#
-         (let [~binding val#]
-           ~@body
-           (recur (async/<! chan#)))))))
-
 (defn assoc-once [m k v]
   {:pre [(not (contains? m k))]}
   (assoc m k v))
